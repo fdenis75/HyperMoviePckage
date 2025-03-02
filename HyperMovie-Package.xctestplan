@@ -1,0 +1,38 @@
+{
+  "configurations" : [
+    {
+      "id" : "E892FEA7-CA04-4D9B-A5C6-F62DA03F1BC8",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieModelsTests",
+        "name" : "HyperMovieModelsTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieCoreTests",
+        "name" : "HyperMovieCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieServicesTests",
+        "name" : "HyperMovieServicesTests"
+      }
+    }
+  ],
+  "version" : 1
+}
