@@ -2,17 +2,70 @@
   "configurations" : [
     {
       "id" : "C2B7B083-EB2D-46FA-933F-3972E27447EF",
-      "name" : "Configuration 1",
+      "name" : "Debug",
       "options" : {
-
+        "environmentVariables" : {
+          "LOG_LEVEL" : "debug"
+        }
+      }
+    },
+    {
+      "id" : "D3C8B194-FC3D-47BA-844F-4983E38558FF",
+      "name" : "Release",
+      "options" : {
+        "environmentVariables" : {
+          "LOG_LEVEL" : "info"
+        }
       }
     }
   ],
   "defaultOptions" : {
-    "testTimeoutsEnabled" : true
+    "codeCoverage" : {
+      "targets" : [
+        {
+          "containerPath" : "container:",
+          "identifier" : "Models",
+          "name" : "Models"
+        },
+        {
+          "containerPath" : "container:",
+          "identifier" : "Core",
+          "name" : "Core"
+        },
+        {
+          "containerPath" : "container:",
+          "identifier" : "Services",
+          "name" : "Services"
+        }
+      ]
+    },
+    "maximumTestExecutionTimeAllowance" : 300,
+    "testExecutionOrdering" : "random",
+    "testTimeoutsEnabled" : true,
+    "threadSanitizerEnabled" : true
   },
   "testTargets" : [
-
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieServicesTests",
+        "name" : "HyperMovieServicesTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieCoreTests",
+        "name" : "HyperMovieCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "HyperMovieModelsTests",
+        "name" : "HyperMovieModelsTests"
+      }
+    }
   ],
   "version" : 1
 }
