@@ -1,7 +1,7 @@
 import XCTest
 import HyperMovieModels
 
-@available(macOS 14, *)
+@available(macOS 15, *)
 final class LibraryItemTests: XCTestCase {
     // Test paths
     let testFolder1 = "/Users/francois/Desktop/vids"

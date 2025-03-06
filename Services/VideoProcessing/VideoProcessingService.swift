@@ -9,6 +9,7 @@ import AppKit
 
 /// A service that handles video processing operations including preview generation and mosaic creation.
 /// This service uses structured concurrency for efficient parallel processing of video frames.
+@available(macOS 15, *)
 public actor VideoProcessingService {
     // MARK: - Types
     
@@ -69,6 +70,7 @@ public actor VideoProcessingService {
     ///   - video: The source video to process
     ///   - config: Configuration for preview generation
     /// - Returns: URL of the generated preview video
+    @available(macOS 15, *)
     public func generatePreview(for video: Video, config: PreviewConfig) async throws -> URL {
         logger.info("Starting preview generation for video: \(video.title)")
         

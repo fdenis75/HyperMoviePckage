@@ -2,7 +2,7 @@ import XCTest
 import SwiftData
 import HyperMovieModels
 
-@available(macOS 14, *)
+@available(macOS 15, *)
 @MainActor
 final class PersistenceTests: XCTestCase {
     var container: ModelContainer!

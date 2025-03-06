@@ -3,10 +3,10 @@ import AVFoundation
 import SwiftData
 import CoreGraphics
 import os
-import HyperMovieModels
 import AppKit
+import HyperMovieModels
 /// A model representing video metadata.
-@available(macOS 14, *)
+@available(macOS 15, *)
 public struct VideoMetadata: Codable, Hashable {
     public var codec: String?
     public var bitrate: Int64?
@@ -21,12 +21,13 @@ public struct VideoMetadata: Codable, Hashable {
 
 /// A model representing a video file in the HyperMovie application.
 @Model
-@available(macOS 14, *)
+@available(macOS 15, *)
 public final class Video {
     
     // MARK: - Properties
     @Transient public var logger = Logger(subsystem: "com.hypermovie", category: "video")
-    
+    @Transient private let signposter = OSSignposter(subsystem: "com.hypermovie", category: "video-performance")
+    #Unique<Video>([\.id],[\.url])
     public var id: UUID
     public var url: URL
     public var title: String
@@ -34,6 +35,9 @@ public final class Video {
     public var thumbnailURL: URL?
     public var mosaicURL: URL?
     public var previewURL: URL?
+    
+    /// The relative path of the video from its base directory
+    public var relativePath: String = ""
     
     // Store resolution as separate width/height
     public var width: Double?
@@ -50,6 +54,17 @@ public final class Video {
     public var fileSize: Int64?
     public var frameRate: Float64?
     
+    /// Status of thumbnail generation
+    public var thumbnailGenerationStatus: ThumbnailStatus? = nil
+    
+    /// Enum representing the status of thumbnail generation
+    public enum ThumbnailStatus: String, Codable {
+        case pending
+        case inProgress
+        case completed
+        case error
+    }
+    
     // MARK: - Computed Properties
     
     public var resolution: CGSize? {
@@ -63,6 +78,53 @@ public final class Video {
             width = Double(newValue?.width ?? 0)
             height = Double(newValue?.height ?? 0)
         }
+    }
+    
+    /// Creates LibraryItems for all parent folders of this video
+    /// - Parameter modelContext: The SwiftData ModelContext to use for inserting LibraryItems
+    /// - Returns: Array of created or existing LibraryItems
+    @available(macOS 15, *)
+    public func createFolderStructure(in modelContext: ModelContext) -> [HyperMovieModels.LibraryItem] {
+        let folderURL = url.deletingLastPathComponent()
+        var currentPath = folderURL
+        var createdItems: [HyperMovieModels.LibraryItem] = []
+        var pathComponents: [URL] = []
+        
+        // Build path components from deepest to root
+        while !currentPath.path.isEmpty && currentPath.path != "/" {
+            pathComponents.append(currentPath)
+            currentPath = currentPath.deletingLastPathComponent()
+        }
+        
+        // Process from root to deepest folder
+        for folderURL in pathComponents.reversed() {
+            // Check if LibraryItem already exists
+            let descriptor = FetchDescriptor<LibraryItem>(
+                predicate: #Predicate<LibraryItem> { item in
+                    item.url == folderURL && item.typeString == "folder"
+                }
+            )
+            
+            do {
+                let existingItems = try modelContext.fetch(descriptor)
+                if let existingItem = existingItems.first {
+                    createdItems.append(existingItem)
+                } else {
+                    // Create new LibraryItem
+                    let folderItem = HyperMovieModels.LibraryItem(
+                        name: folderURL.lastPathComponent,
+                        type: .folder,
+                        url: folderURL
+                    )
+                    modelContext.insert(folderItem)
+                    createdItems.append(folderItem)
+                }
+            } catch {
+                logger.error("Failed to fetch or create LibraryItem: \(error.localizedDescription)")
+            }
+        }
+        
+        return createdItems
     }
     
     public var metadata: VideoMetadata {
@@ -81,6 +143,7 @@ public final class Video {
     }
     
     public init(id: UUID = UUID(), url: URL, title: String? = nil) async throws {
+        let initInterval = signposter.beginInterval("Video Initialization", "id: \(id)")
         logger.debug("🎬 Initializing Video object with id: \(id), url: \(url.path)")
         
         self.id = id
@@ -90,27 +153,29 @@ public final class Video {
         self.dateModified = Date()
         self.processingStatus = [:]
         
-        logger.debug("📝 Basic properties initialized - title: \(self.title)")
-        
-        // Setup thumbnail directory in Application Support
+        // Check if thumbnail exists but was not completed
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let thumbnailDirectory = appSupport.appendingPathComponent("HyperMovie/Thumbnails", isDirectory: true)
-        
-        logger.debug("📁 Creating thumbnail directory at: \(thumbnailDirectory.path)")
-        try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
-        
-        // Generate thumbnail filename
         let thumbnailFileName = id.uuidString + "_thumb.heic"
         self.thumbnailURL = thumbnailDirectory.appendingPathComponent(thumbnailFileName)
-        logger.debug("🖼️ Thumbnail will be saved to: \(thumbnailFileName)")
         
-        // Load metadata and generate thumbnail, but don't fail if they fail
+        if let thumbnailURL = self.thumbnailURL {
+            if FileManager.default.fileExists(atPath: thumbnailURL.path) {
+                self.thumbnailGenerationStatus = .completed
+            } else {
+                self.thumbnailGenerationStatus = .pending
+            }
+        }
+        
+        try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
+        
+        // Load metadata but don't generate thumbnail immediately
         do {
+            let metadataInterval = signposter.beginInterval("Load Metadata")
             try await loadMetadata()
-            logger.debug("✅ Metadata loaded successfully")
+            signposter.endInterval("Load Metadata", metadataInterval)
         } catch {
             logger.error("❌ Failed to load metadata: \(error.localizedDescription)")
-            // Set default values for metadata
             self.duration = 0
             self.width = nil
             self.height = nil
@@ -119,16 +184,30 @@ public final class Video {
             self.frameRate = nil
         }
         
-        do {
-            try await generateThumbnail()
-            logger.debug("✅ Thumbnail generated successfully")
-        } catch {
-            logger.error("❌ Failed to generate thumbnail: \(error.localizedDescription)")
-            // Thumbnail URL will remain nil
-        }
-        
         // Update file size even if other operations fail
         await updateFileSize()
+        
+        // Start thumbnail generation in background if needed
+        if self.thumbnailGenerationStatus == .pending {
+            Task.detached(priority: .background) { [weak self] in
+                guard let self = self else { return }
+                let thumbnailInterval = self.signposter.beginInterval("Background Thumbnail Generation", id: OSSignpostID(UInt64(bitPattern: Int64(self.id.hashValue))))
+                do {
+                    try await self.generateThumbnail()
+                    await MainActor.run {
+                        self.thumbnailGenerationStatus = .completed
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.thumbnailGenerationStatus = .error
+                    }
+                    logger.error("Failed to generate thumbnail: \(error.localizedDescription)")
+                }
+                self.signposter.endInterval("Background Thumbnail Generation", thumbnailInterval)
+            }
+        }
+        
+        signposter.endInterval("Video Initialization", initInterval)
     }
     
     // MARK: - Computed Properties (Nonisolated)
@@ -198,8 +277,8 @@ public final class Video {
             newMetadata.codec = codec
             self.metadata = newMetadata
 
-            self.metadata.custom["resolution"] = "\(Int(size.width))x\(Int(size.height))"
-            self.metadata.custom["framerate"] = "\(frameRate)"
+            //self.metadata.custom["resolution"] = "\(Int(size.width))x\(Int(size.height))"
+            //self.metadata.custom["framerate"] = "\(frameRate)"
         }
     
     }
@@ -286,6 +365,9 @@ public final class Video {
     }
     
     private func generateThumbnail() async throws {
+        let interval = signposter.beginInterval("Generate Thumbnail")
+        defer { signposter.endInterval("Generate Thumbnail", interval) }
+        
         guard let thumbnailURL = thumbnailURL else { return }
         
         // Skip if thumbnail already exists
@@ -298,6 +380,7 @@ public final class Video {
             let duration = try await asset.load(.duration)
             let time = CMTime(seconds: duration.seconds * 0.1, preferredTimescale: 600)
             
+            let generatorInterval = signposter.beginInterval("Image Generation")
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             generator.requestedTimeToleranceBefore = .zero
@@ -313,15 +396,34 @@ public final class Video {
             
             let cgImage = try await generator.image(at: time).image
             let nsImage = NSImage(cgImage: cgImage, size: .zero)
+            signposter.endInterval("Image Generation", generatorInterval)
             
-            guard let imageData = nsImage.heicData(compressionQuality: 0.8) else {
+            let compressionInterval = signposter.beginInterval("Image Compression")
+            guard let imageData = nsImage.heicData(compressionQuality: 0.3) else {
                 throw VideoError.processingFailed(thumbnailURL, NSError(domain: "com.hypermovie", code: -1))
             }
             
             try imageData.write(to: thumbnailURL)
+            signposter.endInterval("Image Compression", compressionInterval)
+            
             logger.info("Generated thumbnail for \(self.url.path)")
         } catch {
             logger.error("Failed to generate thumbnail: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    /// Generate thumbnail asynchronously if not already generated
+    public func ensureThumbnail() async throws {
+        guard thumbnailGenerationStatus == .pending else { return }
+        
+        await MainActor.run { thumbnailGenerationStatus = .inProgress }
+        
+        do {
+            try await generateThumbnail()
+            await MainActor.run { thumbnailGenerationStatus = .completed }
+        } catch {
+            await MainActor.run { thumbnailGenerationStatus = .error }
             throw error
         }
     }

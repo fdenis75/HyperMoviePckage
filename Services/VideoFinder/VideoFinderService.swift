@@ -5,11 +5,12 @@ import OSLog
 import SwiftData
 
 /// A service that handles finding video files in the system.
-@available(macOS 14.0, *)
+@available(macOS 15.0, *)
 public actor VideoFinderService {
     // MARK: - Properties
     
     private let logger = Logger(subsystem: "com.hypermovie", category: "video-finder")
+    private let signposter = OSSignposter(subsystem: "com.hypermovie", category: "video-finder-performance")
     
     /// Supported video file types
     private let videoTypes = [
@@ -31,6 +32,7 @@ public actor VideoFinderService {
     ///   - url: The folder URL to search in.
     ///   - recursive: Whether to search in subfolders. Defaults to true.
     /// - Returns: An array of found video URLs.
+    /*
     public func findVideos(in url: URL, recursive: Bool = true) async throws -> [URL] {
         logger.info("Finding videos in folder: \(url.path), recursive: \(recursive)")
         
@@ -38,113 +40,166 @@ public actor VideoFinderService {
             throw VideoFinderError.notADirectory(url)
         }
         
-        let resourceKeys: [URLResourceKey] = [
-            .isDirectoryKey,
-            .contentTypeKey,
-            .fileSizeKey,
-            .creationDateKey,
-            .fileResourceIdentifierKey,
-            .parentDirectoryURLKey // For deduplication
-        ]
+        let query = NSMetadataQuery()
+       
         
-        // Use Set to automatically handle duplicates
-        var uniqueVideos: Set<URL> = []
-        var processedIdentifiers: Set<String> = []
-        var previewMap: [URL: [URL]] = [:] // Map original videos to their previews
-        
-        // Helper function to process URL
-        func processURL(_ fileURL: URL) throws -> Bool {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(resourceKeys)),
-                  let contentType = resourceValues.contentType,
-                  let isDirectory = resourceValues.isDirectory,
-                  !isDirectory else {
-                return false
-            }
-            
-            // Skip hidden files
-            if fileURL.lastPathComponent.hasPrefix(".") {
-                return false
-            }
-            
-            // Get unique identifier for the file
-            if let fileID = resourceValues.fileResourceIdentifier as? String {
-                if processedIdentifiers.contains(fileID) {
-                    return false
-                }
-                processedIdentifiers.insert(fileID)
-            }
-            
-            // Check if it's a video file
-            guard videoTypes.contains(contentType.identifier) else {
-                return false
-            }
-            
-            // Check if it's a preview file
-            let filename = fileURL.lastPathComponent.lowercased()
-            if filename.contains("-preview") {
-                // Find the original video file
-                let originalName = filename.replacingOccurrences(of: "-preview", with: "")
-                let parentURL = resourceValues.parentDirectory
-                
-                // Break down the complex comparison
-                let matchingVideos = uniqueVideos.filter { url in
-                    let urlName = url.deletingPathExtension().lastPathComponent.lowercased()
-                    let originalNameComponents = originalName.components(separatedBy: ".")
-                    let originalNameStripped = originalNameComponents[0].lowercased()
-                    let sameParent = url.deletingLastPathComponent() == parentURL
-                    return urlName == originalNameStripped && sameParent
-                }
-                
-                if let originalURL = matchingVideos.first {
-                    if previewMap[originalURL] == nil {
-                        previewMap[originalURL] = []
-                    }
-                    previewMap[originalURL]?.append(fileURL)
-                }
-                return false
-            }
-            
-            return true
-        }
-        
-        // If not recursive, use contentsOfDirectory
-        if !recursive {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: resourceKeys,
-                options: [.skipsHiddenFiles]
-            )
-            
-            for fileURL in contents {
-                if try processURL(fileURL) {
-                    uniqueVideos.insert(fileURL)
-                }
-            }
-            
-            return Array(uniqueVideos)
-        }
-        
-        // For recursive search, use enumerator starting from the specified folder
-        let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: resourceKeys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        // Add location predicate
+        /*let locationPredicate = NSPredicate(format: recursive ? 
+            "kMDItemPath BEGINSWITH %@" : 
+            "kMDItemPath BEGINSWITH %@ AND NOT kMDItemPath CONTAINS '/'", 
+            url.path + "/"
         )
+        predicates.append(locationPredicate)*/
+
         
-        while let fileURL = enumerator?.nextObject() as? URL {
-            if try processURL(fileURL) {
-                uniqueVideos.insert(fileURL)
+        // Add video type predicates
+        let typePredicates = videoTypes.map { type in
+            NSPredicate(format: "kMDItemContentTypeTree == %@", type)
+        }
+         let typePredicate = NSCompoundPredicate(orPredicateWithSubpredicates: typePredicates)
+
+       // predicates.append(NSCompoundPredicate(orPredicateWithSubpredicates: typePredicates))
+       //query.predicate = typePredicate
+        // Exclude hidden files
+  
+        // Combine all predicates
+        query.predicate = typePredicate
+        query.searchScopes = [url]
+        query.sortDescriptors = [.init(key: "kMDItemFSName", ascending: true)]
+        
+        return try await withCheckedThrowingContinuation { @Sendable (continuation) in
+            var updateObserver: NSObjectProtocol?
+            var completionObserver: NSObjectProtocol?
+
+            NotificationCenter.default.addObserver(
+                forName: .NSMetadataQueryDidFinishGathering,
+                object: query,
+                queue: .main
+            ) { notification in
+                Task {
+                    let videos = (query.results as! [NSMetadataItem]).compactMap { item -> URL? in
+                        guard let path = item.value(forAttribute: "kMDItemPath") as? String else {
+                            return nil
+                        }
+                        let url = URL(fileURLWithPath: path)
+                        
+                        // Skip preview files
+                        if url.lastPathComponent.lowercased().contains("-preview") {
+                            return nil
+                        }
+                        
+                        return url
+                    }
+                    
+                    // Process preview files
+                    let previewMap = Dictionary(grouping: videos.filter {
+                        $0.lastPathComponent.lowercased().contains("-preview")
+                    }) { url in
+                        url.deletingPathExtension().deletingPathExtension()
+                    }
+                    
+                    // Store preview information in UserDefaults
+                    await MainActor.run {
+                        UserDefaults.standard.set(previewMap.mapValues { $0.map { $0.path } }, 
+                                               forKey: "VideoPreviewMap")
+                    }
+                    
+                    continuation.resume(returning: Array(Set(videos)))
+                    query.stop()
+                }
+            }
+            
+            DispatchQueue.main.async {
+                query.start()
             }
         }
+    }
+    */
+    public func findVideoFiles(
+        in directory: URL,
+        recursive: Bool = true,
+        progress: ((String) async -> Void)? = nil
+    ) async throws -> [URL] {
+        let interval = signposter.beginInterval("Find Video Files", "dir: \(directory.lastPathComponent)")
+        defer { signposter.endInterval("Find Video Files", interval) }
         
-        // Store preview information in UserDefaults for later use
-        await MainActor.run {
-            UserDefaults.standard.set(previewMap.mapValues { $0.map { $0.path } }, forKey: "VideoPreviewMap")
+        let query = NSMetadataQuery()
+        
+        let querySetupInterval = signposter.beginInterval("Query Setup")
+        let typePredicates = videoTypes.map { type in
+            NSPredicate(format: "kMDItemContentTypeTree == %@", type)
         }
         
-        logger.info("Found \(uniqueVideos.count) unique videos in \(url.path)")
-        return Array(uniqueVideos)
+        let typePredicate = NSCompoundPredicate(orPredicateWithSubpredicates: typePredicates)
+        query.predicate = typePredicate
+        query.searchScopes = [directory]
+        query.sortDescriptors = [NSSortDescriptor(key: "kMDItemContentCreationDate", ascending: true)]
+        signposter.endInterval("Query Setup", querySetupInterval)
+
+        return try await withCheckedThrowingContinuation { @Sendable (continuation) in
+            var completionObserver: NSObjectProtocol?
+            var updateObserver: NSObjectProtocol?
+            
+            // Add observer for updates during the search
+            updateObserver = NotificationCenter.default.addObserver(
+                forName: .NSMetadataQueryGatheringProgress,
+                object: query,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self else { return }
+                if let currentItem = query.results.last as? NSMetadataItem,
+                   let path = currentItem.value(forAttribute: "kMDItemPath") as? String {
+                    Task {
+                        await progress?(path)
+                    }
+                }
+            }
+            
+            completionObserver = NotificationCenter.default.addObserver(
+                forName: .NSMetadataQueryDidFinishGathering,
+                object: query,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self else {
+                    if let completionObserver = completionObserver {
+                        NotificationCenter.default.removeObserver(completionObserver)
+                    }
+                    if let updateObserver = updateObserver {
+                        NotificationCenter.default.removeObserver(updateObserver)
+                    }
+                    continuation.resume(returning: [])
+                    return
+                }
+                
+                let processInterval = self.signposter.beginInterval("Process Query Results")
+                let videos = (query.results as! [NSMetadataItem]).compactMap { item -> URL? in
+                    guard let path = item.value(forAttribute: "kMDItemPath") as? String else {
+                        return nil
+                    }
+                    let url = URL(fileURLWithPath: path)
+                    return url.lastPathComponent.lowercased().contains("amprv") ? nil : url
+                }
+                
+                if let completionObserver = completionObserver {
+                    NotificationCenter.default.removeObserver(completionObserver)
+                }
+                if let updateObserver = updateObserver {
+                    NotificationCenter.default.removeObserver(updateObserver)
+                }
+                
+                self.signposter.endInterval("Process Query Results", processInterval)
+                continuation.resume(returning: videos)
+                query.stop()
+            }
+            
+            let startInterval = signposter.beginInterval("Start Query")
+            DispatchQueue.main.async {
+                query.start()
+                self.signposter.endInterval("Start Query", startInterval)
+            }
+        }
     }
+
     
     /// Find videos created between specific dates.
     /// - Parameters:
@@ -214,17 +269,24 @@ public actor VideoFinderService {
         let query = NSMetadataQuery()
         var predicates: [NSPredicate] = []
         
-        // Add name filter
-        if let nameFilter = criteria.nameFilter {
-            predicates.append(NSPredicate(format: "kMDItemDisplayName CONTAINS[cd] %@", nameFilter))
+        // Add name filter - handle single and multiple names appropriately
+        if let nameFilters = criteria.nameFilter {
+            if nameFilters.count == 1 {
+                predicates.append(NSPredicate(format: "kMDItemDisplayName CONTAINS[cd] %@", nameFilters[0]))
+            } else if nameFilters.count > 1 {
+                let namePredicates = nameFilters.map { name in
+                    NSPredicate(format: "kMDItemDisplayName CONTAINS[cd] %@", name)
+                }
+                predicates.append(NSCompoundPredicate(orPredicateWithSubpredicates: namePredicates))
+            }
         }
         
         // Add date range
-        if let dateRange = criteria.dateRange {
+        if let start = criteria.startDate, let end = criteria.endDate {
             predicates.append(NSPredicate(
                 format: "kMDItemContentCreationDate >= %@ AND kMDItemContentCreationDate < %@",
-                dateRange.start as NSDate,
-                dateRange.end as NSDate
+                start as NSDate,
+                end as NSDate
             ))
         }
         
@@ -275,20 +337,22 @@ public actor VideoFinderService {
     ///   - folderURL: URL of the folder to scan
     /// - Returns: A tuple containing missing videos (in folder but not in DB) and orphaned videos (in DB but not in folder)
     public func compareContent(databaseVideos: [Video], folderURL: URL) async throws -> (missing: [URL], orphaned: [Video]) {
+        let interval = signposter.beginInterval("Compare Content", "folder: \(folderURL.lastPathComponent)")
+        defer { signposter.endInterval("Compare Content", interval) }
+        
         logger.info("Comparing database content with folder: \(folderURL.path)")
         
-        // Get all videos in the folder
-        let folderVideos = try await findVideos(in: folderURL, recursive: true)
-        let folderPaths = Set(folderVideos.map { $0.path })
+        let scanInterval = signposter.beginInterval("Scan Folder")
+        let folderVideos = try await findVideoFiles(in: folderURL, recursive: true)
+        signposter.endInterval("Scan Folder", scanInterval)
         
-        // Get all video paths from database
+        let compareInterval = signposter.beginInterval("Compare Results")
+        let folderPaths = Set(folderVideos.map { $0.path })
         let dbPaths = Set(databaseVideos.map { $0.url.path })
         
-        // Find missing videos (in folder but not in DB)
         let missingVideos = folderVideos.filter { !dbPaths.contains($0.path) }
-        
-        // Find orphaned videos (in DB but not in folder)
         let orphanedVideos = databaseVideos.filter { !folderPaths.contains($0.url.path) }
+        signposter.endInterval("Compare Results", compareInterval)
         
         logger.info("""
         Content comparison results:
@@ -311,7 +375,7 @@ public actor VideoFinderService {
         // Count items to be deleted
         var itemCount = 0
         do {
-            let videos = try await findVideos(in: url, recursive: true)
+            let videos = try await findVideoFiles(in: url, recursive: true)
             itemCount = videos.count
             
             // Prepare warning message
@@ -376,7 +440,7 @@ public actor VideoFinderService {
             return (0, error)
         }
     }
-}
+
 
 /// Errors that can occur during video finding operations.
 public enum VideoFinderError: LocalizedError {
@@ -399,6 +463,7 @@ public enum VideoFinderError: LocalizedError {
             return "Failed to enumerate directory \(url.path): \(error.localizedDescription)"
         case .queryFailed(let error):
             return "Failed to execute metadata query: \(error.localizedDescription)"
+        }
         }
     }
 } 

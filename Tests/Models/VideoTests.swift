@@ -1,7 +1,7 @@
 import XCTest
 import HyperMovieModels
 
-@available(macOS 14, *)
+@available(macOS 15, *)
 final class VideoTests: XCTestCase {
     let testVideo1 = "/Users/francois/Desktop/vids/IMG_4506 2.MOV"
     

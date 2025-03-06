@@ -25,7 +25,7 @@ public enum VideoError: LocalizedError {
     
     /// The video frame extraction failed.
     case frameExtractionFailed(URL, Error)  
-    
+    case cancelled
     public var errorDescription: String? {
         switch self {
         case .videoTrackNotFound(let url):
@@ -44,6 +44,8 @@ public enum VideoError: LocalizedError {
             return "Failed to generate thumbnail for video at \(url.path): \(error.localizedDescription)"
         case .frameExtractionFailed(let url, let error):
             return "Failed to extract frames from video at \(url.path): \(error.localizedDescription)"
+        case .cancelled:
+            return "Processing cancelled"
         }
     }
     
@@ -65,6 +67,8 @@ public enum VideoError: LocalizedError {
             return error.localizedDescription
         case .frameExtractionFailed(_, let error):
             return error.localizedDescription
+        case .cancelled:
+            return "Processing cancelled"
         }
     }
     
@@ -86,6 +90,8 @@ public enum VideoError: LocalizedError {
             return "Please try again or adjust the thumbnail generation settings"
         case .frameExtractionFailed:
             return "Please try again or adjust the frame extraction settings"
+        case .cancelled:
+            return "Processing cancelled"
         }
     }
 } 

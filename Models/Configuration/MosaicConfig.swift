@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// Configuration for mosaic generation.
-@available(macOS 14.0, *)
+@available(macOS 15.0, *)
 public struct MosaicConfiguration: Codable, Sendable {
     // MARK: - Properties
     

@@ -5,6 +5,7 @@ import AppKit
 import HyperMovieModels
 
 /// Handles mosaic layout calculations and optimization
+@available(macOS 15, *)
 public final class LayoutProcessor {
     private let logger = Logger(subsystem: "com.hypermovie", category: "layout-processing")
     public var mosaicAspectRatio: CGFloat

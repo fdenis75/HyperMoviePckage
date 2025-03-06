@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// A model representing the layout of a mosaic.
-@available(macOS 14.0, *)
+@available(macOS 15.0, *)
 public struct MosaicLayout: Codable, Sendable {
     /// The number of rows in the mosaic.
     public let rows: Int
@@ -76,6 +76,7 @@ public struct Position: Codable, Sendable {
 
 // MARK: - Codable Support
 
+@available(macOS 15.0, *)
 extension MosaicLayout {
     private enum CodingKeys: String, CodingKey {
         case rows, cols, thumbnailSize, positions, thumbCount, thumbnailSizes, mosaicSize

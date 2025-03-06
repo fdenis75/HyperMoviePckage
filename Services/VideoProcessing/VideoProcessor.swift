@@ -6,6 +6,7 @@ import AppKit
 import HyperMovieModels
 import HyperMovieCore
 import Darwin
+import SwiftData
 
 /// A service that handles video processing operations.
 @available(macOS 15, *)
@@ -57,6 +58,54 @@ public actor VideoProcessor: VideoProcessing {
         defer { processingTasks[url] = nil }
         
         return try await task.value
+    }
+    
+    /// Process a video and create folder structure in the database
+    /// - Parameters:
+    ///   - url: The URL of the video to process
+    ///   - modelContext: The SwiftData ModelContext to use for creating LibraryItems
+    /// - Returns: The processed Video object and created LibraryItems
+    @available(macOS 15, *)
+    public func processWithFolderStructure(url: URL, modelContext: ModelContext) async throws -> (video: Video, folders: [HyperMovieModels.LibraryItem]) {
+        let video = try await process(url: url)
+        let folders = video.createFolderStructure(in: modelContext)
+        return (video, folders)
+    }
+    
+    /// Process multiple videos and create folder structure in the database
+    /// - Parameters:
+    ///   - urls: The URLs of the videos to process
+    ///   - modelContext: The SwiftData ModelContext to use for creating LibraryItems
+    ///   - minConcurrent: Minimum number of concurrent operations
+    ///   - maxConcurrent: Maximum number of concurrent operations
+    ///   - progress: Optional closure for reporting progress
+    /// - Returns: Tuple containing processed videos and created LibraryItems
+    @available(macOS 15, *)
+    public func processMultipleWithFolderStructure(
+        urls: [URL],
+        modelContext: ModelContext,
+        minConcurrent: Int = 2,
+        maxConcurrent: Int = 8,
+        progress: ((Int, String) async -> Void)? = nil
+    ) async throws -> (videos: [Video], folders: [HyperMovieModels.LibraryItem]) {
+        let videos = try await processMultiple(
+            urls: urls,
+            minConcurrent: minConcurrent,
+            maxConcurrent: maxConcurrent,
+            progress: progress
+        )
+        
+        var allFolders: [HyperMovieModels.LibraryItem] = []
+        for video in videos {
+            let folders = video.createFolderStructure(in: modelContext)
+            for folder in folders {
+                if !allFolders.contains(where: { $0.id == folder.id }) {
+                    allFolders.append(folder)
+                }
+            }
+        }
+        
+        return (videos, allFolders)
     }
     
     public func extractMetadata(for video: Video) async throws {
@@ -147,7 +196,7 @@ public actor VideoProcessor: VideoProcessing {
         thumbnailCache.removeAll()
     }
     
-    public func getCurrentMetrics() -> HyperMovieModels.ProcessingMetrics {
+    public func getCurrentMetrics() -> ProcessingMetrics {
         // Get host port for statistics
         let host = mach_host_self()
         var hostSize = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
@@ -184,15 +233,20 @@ public actor VideoProcessor: VideoProcessing {
             diskPressure = 1.0 - (Double(freeSize) / Double(totalSize))
         }
         
-        return HyperMovieModels.ProcessingMetrics(
+        return ProcessingMetrics(
             cpuUsage: cpuUsage,
             memoryAvailable: memoryAvailable,
             diskIOPressure: diskPressure
         )
     }
     
-    public func processMultiple(urls: [URL], minConcurrent: Int = 2, maxConcurrent: Int = 8) async throws -> [Video] {
-        logger.info("Starting batch processing of \(urls.count) videos with 8 concurrent tasks")
+    public func processMultiple(
+        urls: [URL],
+        minConcurrent: Int = 2,
+        maxConcurrent: Int = 8,
+        progress: ((Int, String) async -> Void)? = nil
+    ) async throws -> [Video] {
+        logger.info("Starting batch processing of \(urls.count) videos with \(maxConcurrent) concurrent tasks")
         
         return try await withThrowingTaskGroup(of: Video.self) { group in
             var videos: [Video] = []
@@ -200,7 +254,7 @@ public actor VideoProcessor: VideoProcessing {
             
             var processedCount = 0
             let batchSize = 10 // Process in batches of 10
-            let concurrentTasks = 8 // Fixed at 8 concurrent tasks
+            let concurrentTasks = min(max(minConcurrent, maxConcurrent), 16) // Use provided concurrency with bounds
             
             while processedCount < urls.count {
                 // Process next batch
@@ -208,7 +262,7 @@ public actor VideoProcessor: VideoProcessing {
                 let end = min(start + batchSize, urls.count)
                 let currentBatch = urls[start..<end]
                 
-                // Create a semaphore with fixed concurrency
+                // Create a semaphore with provided concurrency
                 let semaphore = DispatchSemaphore(value: concurrentTasks)
                 
                 for url in currentBatch {
@@ -220,6 +274,9 @@ public actor VideoProcessor: VideoProcessing {
                         
                         do {
                             self.logger.debug("✅ start processing video: \(url.lastPathComponent)")
+                            
+                            await progress?(processedCount + 1, url.lastPathComponent)
+                            // Initialize video without generating thumbnail
                             let video = try await Video(url: url)
                             self.logger.debug("✅ Processed video: \(url.lastPathComponent)")
                             return video
