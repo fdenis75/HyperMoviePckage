@@ -8,7 +8,8 @@ import HyperMovieCore
 
 /// Concrete implementation of application state management
 @available(macOS 15, *)
-@Observable public final class AppState: AppStateManaging {
+@Observable
+ public final class AppState: AppStateManaging {
     // MARK: - SwiftData
  
     public var modelContext: ModelContext
@@ -39,9 +40,14 @@ import HyperMovieCore
     public let previewGenerator: any PreviewGenerating
     
     // MARK: - User Settings
-    public var mosaicConfig = MosaicConfiguration.default
-    public var previewConfig = PreviewConfiguration.default
+    public var mosaicConfig: MosaicConfiguration
+    public var previewConfig: PreviewConfiguration
     
+    // MARK: - Batch Mosaic State
+    public var showBatchMosaicOptions = false
+    public var isBatchGenerating = false
+    public var batchMosaicVideos: [Video] = []
+    public var currentBatchIndex = 0
     
     // MARK: - Initialization
     
@@ -50,6 +56,7 @@ import HyperMovieCore
         videoProcessor: any VideoProcessing,
         mosaicGenerator: any MosaicGenerating,
         previewGenerator: any PreviewGenerating
+     
     ) throws {
         let schema = Schema([
             HyperMovieModels.Video.self,
@@ -57,7 +64,8 @@ import HyperMovieCore
         ])
         let modelConfiguration = ModelConfiguration(schema: schema)
         let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
-        
+        self.mosaicConfig = MosaicConfiguration.default
+        self.previewConfig = PreviewConfiguration.default
         self.modelContainer = container
         self.modelContext = container.mainContext
         self.videoProcessor = videoProcessor

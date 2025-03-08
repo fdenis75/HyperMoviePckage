@@ -85,6 +85,9 @@ public final class Video {
     /// - Returns: Array of created or existing LibraryItems
     @available(macOS 15, *)
     public func createFolderStructure(in modelContext: ModelContext) -> [HyperMovieModels.LibraryItem] {
+        let folderInterval = signposter.beginInterval("Create Folder Structure", "video: \(self.title)")
+        defer { signposter.endInterval("Create Folder Structure", folderInterval) }
+        
         let folderURL = url.deletingLastPathComponent()
         var currentPath = folderURL
         var createdItems: [HyperMovieModels.LibraryItem] = []
@@ -99,6 +102,7 @@ public final class Video {
         // Process from root to deepest folder
         for folderURL in pathComponents.reversed() {
             // Check if LibraryItem already exists
+            let fetchInterval = signposter.beginInterval("Fetch LibraryItem", "folder: \(folderURL.lastPathComponent)")
             let descriptor = FetchDescriptor<LibraryItem>(
                 predicate: #Predicate<LibraryItem> { item in
                     item.url == folderURL && item.typeString == "folder"
@@ -107,10 +111,13 @@ public final class Video {
             
             do {
                 let existingItems = try modelContext.fetch(descriptor)
+                signposter.endInterval("Fetch LibraryItem", fetchInterval, "exists: \(!existingItems.isEmpty)")
+                
                 if let existingItem = existingItems.first {
                     createdItems.append(existingItem)
                 } else {
                     // Create new LibraryItem
+                    let createInterval = signposter.beginInterval("Create LibraryItem", "folder: \(folderURL.lastPathComponent)")
                     let folderItem = HyperMovieModels.LibraryItem(
                         name: folderURL.lastPathComponent,
                         type: .folder,
@@ -118,9 +125,11 @@ public final class Video {
                     )
                     modelContext.insert(folderItem)
                     createdItems.append(folderItem)
+                    signposter.endInterval("Create LibraryItem", createInterval)
                 }
             } catch {
                 logger.error("Failed to fetch or create LibraryItem: \(error.localizedDescription)")
+                signposter.endInterval("Fetch LibraryItem", fetchInterval, "error: true")
             }
         }
         
@@ -154,6 +163,7 @@ public final class Video {
         self.processingStatus = [:]
         
         // Check if thumbnail exists but was not completed
+        let thumbnailSetupInterval = signposter.beginInterval("Thumbnail Setup")
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let thumbnailDirectory = appSupport.appendingPathComponent("HyperMovie/Thumbnails", isDirectory: true)
         let thumbnailFileName = id.uuidString + "_thumb.heic"
@@ -168,6 +178,7 @@ public final class Video {
         }
         
         try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
+        signposter.endInterval("Thumbnail Setup", thumbnailSetupInterval)
         
         // Load metadata but don't generate thumbnail immediately
         do {
@@ -185,7 +196,9 @@ public final class Video {
         }
         
         // Update file size even if other operations fail
+        let fileSizeInterval = signposter.beginInterval("Update File Size")
         await updateFileSize()
+        signposter.endInterval("Update File Size", fileSizeInterval)
         
         // Start thumbnail generation in background if needed
         if self.thumbnailGenerationStatus == .pending {
@@ -226,17 +239,24 @@ public final class Video {
 
     // MARK: - Main Loading Function
     public func loadMetadata() async throws {
+        let metadataInterval = signposter.beginInterval("Load Metadata", "video: \(self.title)")
+        defer { signposter.endInterval("Load Metadata", metadataInterval) }
+        
         let asset = AVURLAsset(url: url)
 
         do {
             // Load duration asynchronously
+            let durationInterval = signposter.beginInterval("Load Duration")
             let durationSeconds = try await asset.load(.duration).seconds
             await updateDuration(durationSeconds)
+            signposter.endInterval("Load Duration", durationInterval)
 
             // Use new `loadMediaTrack(from:)` function
+            let trackInterval = signposter.beginInterval("Load Media Track")
             if let (size, frameRate, bitrate, codec) = try await loadMediaTrack(from: asset) {
                 await processVideoTrackData(size: size, frameRate: frameRate, bitrate: bitrate, codec: codec)
             }
+            signposter.endInterval("Load Media Track", trackInterval)
         } catch {
             logger.error("Error loading metadata: \(error.localizedDescription)")
             throw error
@@ -245,6 +265,9 @@ public final class Video {
 
     // MARK: - Private Methods
     private func loadMediaTrack(from asset: AVURLAsset) async throws -> (CGSize, Float64, Int64, String?)? {
+        let trackInterval = signposter.beginInterval("Load Media Track Details")
+        defer { signposter.endInterval("Load Media Track Details", trackInterval) }
+        
         let tracks = try await asset.loadTracks(withMediaType: .video)
         guard let track = tracks.first else { return nil }
 
@@ -268,6 +291,9 @@ public final class Video {
         return (resolvedSize, Float64(resolvedFrameRate),Int64(resolvedBitrate), codec)
     }
     private func processVideoTrackData(size: CGSize, frameRate: Float64, bitrate: Int64, codec: String?) async {
+        let processInterval = signposter.beginInterval("Process Video Track Data")
+        defer { signposter.endInterval("Process Video Track Data", processInterval) }
+        
         await MainActor.run {
             self.resolution = size
             self.frameRate = frameRate
@@ -300,6 +326,9 @@ public final class Video {
     // MARK: - Thumbnail Generation
     
     public func generateThumbnails(density: DensityConfig) async throws -> [VideoThumbnail] {
+        let thumbnailsInterval = signposter.beginInterval("Generate Thumbnails", "density: \(density.factor)")
+        defer { signposter.endInterval("Generate Thumbnails", thumbnailsInterval) }
+        
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
         
@@ -308,6 +337,7 @@ public final class Video {
         
         var thumbnails: [VideoThumbnail] = []
         for i in 0..<frameCount {
+            let singleInterval = signposter.beginInterval("Generate Single Thumbnail", "index: \(i)")
             let time = CMTime(seconds: Double(i) * interval, preferredTimescale: 600)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -322,12 +352,16 @@ public final class Video {
                 videoURL: url
             )
             thumbnails.append(thumbnail)
+            signposter.endInterval("Generate Single Thumbnail", singleInterval)
         }
         
         return thumbnails
     }
     
     private func calculateThumbnailCount(duration: Double, density: DensityConfig) -> Int {
+        let calcInterval = signposter.beginInterval("Calculate Thumbnail Count")
+        defer { signposter.endInterval("Calculate Thumbnail Count", calcInterval) }
+        
         if duration < 5 { return 4 }
         
         let base = 320.0 / 200.0 // base on thumbnail width
@@ -377,7 +411,10 @@ public final class Video {
         
         do {
             let asset = AVURLAsset(url: url)
+            let loadDurationInterval = signposter.beginInterval("Load Duration")
             let duration = try await asset.load(.duration)
+            signposter.endInterval("Load Duration", loadDurationInterval)
+            
             let time = CMTime(seconds: duration.seconds * 0.1, preferredTimescale: 600)
             
             let generatorInterval = signposter.beginInterval("Image Generation")
@@ -387,23 +424,33 @@ public final class Video {
             generator.requestedTimeToleranceAfter = .zero
             
             // Calculate thumbnail size based on video resolution
+            let loadTracksInterval = signposter.beginInterval("Load Video Tracks")
             let tracks = try await asset.loadTracks(withMediaType: .video)
+            signposter.endInterval("Load Video Tracks", loadTracksInterval)
+            
             if let track = tracks.first {
+                let loadSizeInterval = signposter.beginInterval("Load Track Size")
                 let size = try await track.load(.naturalSize)
+                signposter.endInterval("Load Track Size", loadSizeInterval)
+                
                 let aspectRatio = size.width / size.height
                 generator.maximumSize = CGSize(width: 480, height: 480 / aspectRatio)
             }
             
+            let imageGenInterval = signposter.beginInterval("Generate Image")
             let cgImage = try await generator.image(at: time).image
             let nsImage = NSImage(cgImage: cgImage, size: .zero)
-            signposter.endInterval("Image Generation", generatorInterval)
+            signposter.endInterval("Image Generation", imageGenInterval)
+            signposter.endInterval("Generate Image", generatorInterval)
             
             let compressionInterval = signposter.beginInterval("Image Compression")
             guard let imageData = nsImage.heicData(compressionQuality: 0.3) else {
                 throw VideoError.processingFailed(thumbnailURL, NSError(domain: "com.hypermovie", code: -1))
             }
             
+            let writeInterval = signposter.beginInterval("Write Thumbnail")
             try imageData.write(to: thumbnailURL)
+            signposter.endInterval("Write Thumbnail", writeInterval)
             signposter.endInterval("Image Compression", compressionInterval)
             
             logger.info("Generated thumbnail for \(self.url.path)")
@@ -415,6 +462,9 @@ public final class Video {
 
     /// Generate thumbnail asynchronously if not already generated
     public func ensureThumbnail() async throws {
+        let ensureInterval = signposter.beginInterval("Ensure Thumbnail")
+        defer { signposter.endInterval("Ensure Thumbnail", ensureInterval) }
+        
         guard thumbnailGenerationStatus == .pending else { return }
         
         await MainActor.run { thumbnailGenerationStatus = .inProgress }

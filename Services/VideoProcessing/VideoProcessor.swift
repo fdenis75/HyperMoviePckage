@@ -14,6 +14,7 @@ public actor VideoProcessor: VideoProcessing {
     // MARK: - Properties
     
     private let logger = Logger(subsystem: "com.hypermovie", category: "video-processing")
+    private let signposter = OSSignposter(subsystem: "com.hypermovie", category: "video-processing-performance")
     private let processingQueue = DispatchQueue(label: "com.hypermovie.video-processing", qos: .userInitiated)
     private let context = CIContext(options: [.useSoftwareRenderer: false])
     
@@ -40,6 +41,9 @@ public actor VideoProcessor: VideoProcessing {
     // MARK: - VideoProcessing
     
     public func process(url: URL) async throws -> Video {
+        let processInterval = signposter.beginInterval("Process Video", "url: \(url.lastPathComponent)")
+        defer { signposter.endInterval("Process Video", processInterval) }
+        
         if let existingTask = processingTasks[url] {
             return try await existingTask.value
         }
@@ -48,7 +52,9 @@ public actor VideoProcessor: VideoProcessing {
             logger.info("Processing video at \(url.path)")
             
             // Create video object - it will handle its own metadata and thumbnail generation
+            let videoInitInterval = signposter.beginInterval("Video Initialization", "url: \(url.lastPathComponent)")
             let video = try await Video(url: url)
+            signposter.endInterval("Video Initialization", videoInitInterval)
             
             logger.info("Completed processing for \(url.path)")
             return video
@@ -67,6 +73,9 @@ public actor VideoProcessor: VideoProcessing {
     /// - Returns: The processed Video object and created LibraryItems
     @available(macOS 15, *)
     public func processWithFolderStructure(url: URL, modelContext: ModelContext) async throws -> (video: Video, folders: [HyperMovieModels.LibraryItem]) {
+        let structureInterval = signposter.beginInterval("Process With Folder Structure", "url: \(url.lastPathComponent)")
+        defer { signposter.endInterval("Process With Folder Structure", structureInterval) }
+        
         let video = try await process(url: url)
         let folders = video.createFolderStructure(in: modelContext)
         return (video, folders)
@@ -88,6 +97,9 @@ public actor VideoProcessor: VideoProcessing {
         maxConcurrent: Int = 8,
         progress: ((Int, String) async -> Void)? = nil
     ) async throws -> (videos: [Video], folders: [HyperMovieModels.LibraryItem]) {
+        let batchInterval = signposter.beginInterval("Process Multiple With Folder Structure", "count: \(urls.count)")
+        defer { signposter.endInterval("Process Multiple With Folder Structure", batchInterval) }
+        
         let videos = try await processMultiple(
             urls: urls,
             minConcurrent: minConcurrent,
@@ -95,6 +107,7 @@ public actor VideoProcessor: VideoProcessing {
             progress: progress
         )
         
+        let folderInterval = signposter.beginInterval("Create Folder Structure", "videos: \(videos.count)")
         var allFolders: [HyperMovieModels.LibraryItem] = []
         for video in videos {
             let folders = video.createFolderStructure(in: modelContext)
@@ -104,19 +117,26 @@ public actor VideoProcessor: VideoProcessing {
                 }
             }
         }
+        signposter.endInterval("Create Folder Structure", folderInterval, "folders: \(allFolders.count)")
         
         return (videos, allFolders)
     }
     
     public func extractMetadata(for video: Video) async throws {
+        let metadataInterval = signposter.beginInterval("Extract Metadata", "video: \(video.title)")
+        defer { signposter.endInterval("Extract Metadata", metadataInterval) }
+        
         logger.info("Extracting metadata for \(video.url.path)")
         
         let asset = AVURLAsset(url: video.url)
         
         // Load duration
+        let durationInterval = signposter.beginInterval("Load Duration")
         let duration = try await asset.load(.duration).seconds
+        signposter.endInterval("Load Duration", durationInterval)
         
         // Load video track properties
+        let trackInterval = signposter.beginInterval("Load Video Track")
         if let track = try await asset.loadTracks(withMediaType: .video).first {
             let dimensions = try await track.load(.naturalSize)
             let frameRate = try await Float(track.load(.nominalFrameRate))
@@ -129,6 +149,7 @@ public actor VideoProcessor: VideoProcessing {
             }
             
             // Load format descriptions
+            let formatInterval = signposter.beginInterval("Load Format Descriptions")
             let descriptions = try await track.load(.formatDescriptions)
             if let formatDesc = descriptions.first {
                 let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDesc)
@@ -136,14 +157,19 @@ public actor VideoProcessor: VideoProcessing {
                     video.metadata.codec = String(describing: mediaSubType)
                 }
             }
+            signposter.endInterval("Load Format Descriptions", formatInterval)
         } else {
             throw VideoError.videoTrackNotFound(video.url)
         }
+        signposter.endInterval("Load Video Track", trackInterval)
         
         logger.info("Completed metadata extraction for \(video.url.path)")
     }
     
     public func generateThumbnail(for video: Video, size: CGSize) async throws -> URL {
+        let thumbnailInterval = signposter.beginInterval("Generate Thumbnail", "video: \(video.title)")
+        defer { signposter.endInterval("Generate Thumbnail", thumbnailInterval) }
+        
         logger.info("Generating thumbnail for \(video.url.path)")
         
         // Check if thumbnail already exists in persistent storage
@@ -165,9 +191,12 @@ public actor VideoProcessor: VideoProcessing {
         generator.requestedTimeToleranceAfter = config.useAccurateTimestamps ? .zero : .positiveInfinity
         generator.maximumSize = size
         
+        let imageGenInterval = signposter.beginInterval("Generate Image")
         let cgImage = try await generator.image(at: time).image
         let nsImage = NSImage(cgImage: cgImage, size: size)
+        signposter.endInterval("Generate Image", imageGenInterval)
         
+        let compressionInterval = signposter.beginInterval("Compress Image")
         let data: Data?
         switch config.format {
         case .jpeg:
@@ -183,6 +212,8 @@ public actor VideoProcessor: VideoProcessing {
         }
         
         try imageData.write(to: persistentURL)
+        signposter.endInterval("Compress Image", compressionInterval)
+        
         thumbnailCache[video.url] = persistentURL
         
         logger.info("Completed thumbnail generation for \(video.url.path)")
@@ -197,6 +228,9 @@ public actor VideoProcessor: VideoProcessing {
     }
     
     public func getCurrentMetrics() -> ProcessingMetrics {
+        let metricsInterval = signposter.beginInterval("Get System Metrics")
+        defer { signposter.endInterval("Get System Metrics", metricsInterval) }
+        
         // Get host port for statistics
         let host = mach_host_self()
         var hostSize = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
@@ -246,6 +280,9 @@ public actor VideoProcessor: VideoProcessing {
         maxConcurrent: Int = 8,
         progress: ((Int, String) async -> Void)? = nil
     ) async throws -> [Video] {
+        let batchInterval = signposter.beginInterval("Process Multiple Videos", "count: \(urls.count)")
+        defer { signposter.endInterval("Process Multiple Videos", batchInterval, "completed: true") }
+        
         logger.info("Starting batch processing of \(urls.count) videos with \(maxConcurrent) concurrent tasks")
         
         return try await withThrowingTaskGroup(of: Video.self) { group in
@@ -262,6 +299,8 @@ public actor VideoProcessor: VideoProcessing {
                 let end = min(start + batchSize, urls.count)
                 let currentBatch = urls[start..<end]
                 
+                let batchProcessInterval = signposter.beginInterval("Process Batch", "batch: \(processedCount/batchSize + 1), size: \(currentBatch.count)")
+                
                 // Create a semaphore with provided concurrency
                 let semaphore = DispatchSemaphore(value: concurrentTasks)
                 
@@ -273,15 +312,19 @@ public actor VideoProcessor: VideoProcessing {
                         defer { semaphore.signal() }
                         
                         do {
+                            let videoInterval = self.signposter.beginInterval("Process Single Video", "url: \(url.lastPathComponent)")
                             self.logger.debug("✅ start processing video: \(url.lastPathComponent)")
                             
                             await progress?(processedCount + 1, url.lastPathComponent)
                             // Initialize video without generating thumbnail
                             let video = try await Video(url: url)
                             self.logger.debug("✅ Processed video: \(url.lastPathComponent)")
+                            
+                            self.signposter.endInterval("Process Single Video", videoInterval, "success: true")
                             return video
                         } catch {
                             self.logger.error("❌ Failed to process video \(url.lastPathComponent): \(error.localizedDescription)")
+                            self.signposter.endInterval("Process Single Video", self.signposter.beginInterval("Process Single Video"), "error: true")
                             throw error
                         }
                     }
@@ -293,6 +336,7 @@ public actor VideoProcessor: VideoProcessing {
                 }
                 
                 processedCount = end
+                signposter.endInterval("Process Batch", batchProcessInterval, "completed: \(currentBatch.count)")
             }
             
             logger.info("✅ Completed processing \(videos.count) videos")

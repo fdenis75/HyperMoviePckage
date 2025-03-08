@@ -3,7 +3,7 @@ import CoreGraphics
 
 /// Configuration for mosaic generation.
 @available(macOS 15.0, *)
-public struct MosaicConfiguration: Codable, Sendable {
+public struct MosaicConfiguration: Observable, Codable, Sendable {
     // MARK: - Properties
     
     /// The width of the output mosaic in pixels.
@@ -54,6 +54,7 @@ public struct MosaicConfiguration: Codable, Sendable {
     }
     
     /// The default mosaic configuration.
+    
     public static let `default` = MosaicConfiguration()
 }
 

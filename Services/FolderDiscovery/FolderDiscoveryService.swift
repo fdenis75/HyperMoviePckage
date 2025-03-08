@@ -197,27 +197,21 @@ public actor FolderDiscoveryService {
         let startTime = Date()
         
         // First pass: Count total folders and videos
-        let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        )
+       
+       
         
         var foldersToProcess: [URL] = []
         var totalVideoCount = 0
         
-        while let fileURL = enumerator?.nextObject() as? URL {
-            if isCancelled {
-                delegate?.discoveryDidCancel()
-                throw DiscoveryError.cancelled
-            }
+       
             
-            let resourceValues = try fileURL.resourceValues(forKeys: [.isDirectoryKey])
-            if resourceValues.isDirectory == true {
-                foldersToProcess.append(fileURL)
-            } 
-        }
+    
+        
+        
+        let videoCountInterval = signposter.beginInterval("Counting Videos")
         totalVideoCount = try await videoFinder.findVideoFiles(in: url, recursive: true).count
+        signposter.endInterval("Counting Videos", videoCountInterval)
+      
         
         // Update initial progress
         progress = DiscoveryProgress(
@@ -234,11 +228,13 @@ public actor FolderDiscoveryService {
         var errors: [Error] = []
         let processedVideos: [Video]
         var createdFolders: [LibraryItem] = []
+        
         // Process root folder first
         do {
-            let folderInterval = signposter.beginInterval("Process Folder", "folder: \(url.lastPathComponent)")
+           
             
             // Find videos in the current folder
+            let findVideosInterval = signposter.beginInterval("Find Videos", "folder: \(url.lastPathComponent)")
             let videoURLs = try await videoFinder.findVideoFiles(
                 in: url,
                 recursive: false,
@@ -259,12 +255,15 @@ public actor FolderDiscoveryService {
                     }
                 }
             )
+            signposter.endInterval("Find Videos", findVideosInterval)
             progress.processedVideos = 0
             
             // Filter out videos that already exist in the database if we have a model context
             var filteredVideoURLs = videoURLs
             if let modelContext = modelContext {
+                let filterInterval = signposter.beginInterval("Filter Existing Videos", "count: \(videoURLs.count)")
                 filteredVideoURLs = await filterExistingVideos(urls: videoURLs, in: modelContext)
+                signposter.endInterval("Filter Existing Videos", filterInterval, "filtered: \(videoURLs.count - filteredVideoURLs.count)")
                 
                 // Update skipped files count
                 let skippedCount = videoURLs.count - filteredVideoURLs.count
@@ -273,7 +272,7 @@ public actor FolderDiscoveryService {
             }
             
             // Process videos with configured concurrency
-            
+            let processVideosInterval: OSSignpostIntervalState = signposter.beginInterval("Process Videos", "count: \(filteredVideoURLs.count)")
             
             if let modelContext = modelContext {
                 // Use the version that creates folder structure
@@ -335,20 +334,22 @@ public actor FolderDiscoveryService {
                     }
                 )
             }
+            signposter.endInterval("Process Videos", processVideosInterval, "processed: \(processedVideos.count)")
             
             progress.processedVideos = 0
 
          
             addedVideos.append(contentsOf: processedVideos)
-            signposter.endInterval("Process Folder", folderInterval)
+  
             
         } catch {
             errors.append(error)
             delegate?.discoveryDidEncounterError(error)
         }
        
-        
-        
+      
+     //   signposter.endInterval("Folder Discovery", discoveryInterval)
+
         let statistics = DiscoveryStatistics(
             totalFoldersScanned: progress.processedFolders,
             totalVideosFound: totalVideoCount,
@@ -358,6 +359,7 @@ public actor FolderDiscoveryService {
             totalProcessingTime: Date().timeIntervalSince(startTime),
             averageProcessingRate: progress.processingRate
         )
+
         
         let result = DiscoveryResult(
             addedVideos: addedVideos,
@@ -584,9 +586,13 @@ public actor FolderDiscoveryService {
     /// - Returns: Array of video URLs that don't exist in the database
     @available(macOS 15, *)
     private func filterExistingVideos(urls: [URL], in modelContext: ModelContext) async -> [URL] {
+        let interval = signposter.beginInterval("Filter Existing Videos", "count: \(urls.count)")
+        defer { signposter.endInterval("Filter Existing Videos", interval) }
+        
         return await withTaskGroup(of: (URL, Bool).self) { group in
             for url in urls {
                 group.addTask {
+                    let fetchInterval = self.signposter.beginInterval("Fetch Video", "url: \(url.lastPathComponent)")
                     var descriptor = FetchDescriptor<Video>(
                         predicate: #Predicate<Video> { video in
                             video.url == url
@@ -596,33 +602,39 @@ public actor FolderDiscoveryService {
                     
                     do {
                         let existingVideos = try modelContext.fetch(descriptor)
+                        self.signposter.endInterval("Fetch Video", fetchInterval, "exists: \(!existingVideos.isEmpty)")
                         return (url, existingVideos.isEmpty)
                     } catch {
-                        self.logger.error("Failed to check for existing video: \(error.localizedDescription)")
-                        return (url, true) // Process it anyway if we can't check
+                        self.logger.error("Error checking if video exists: \(error)")
+                        self.signposter.endInterval("Fetch Video", fetchInterval, "error: true")
+                        return (url, true) // Assume it doesn't exist if there's an error
                     }
                 }
             }
             
-            var newURLs: [URL] = []
+            var result: [URL] = []
             for await (url, isNew) in group {
                 if isNew {
-                    newURLs.append(url)
+                    result.append(url)
                 }
             }
-            
-            return newURLs
+            return result
         }
     }
     
+    /// Estimate the remaining time for a processing operation
+    /// - Parameters:
+    ///   - processed: Number of items processed so far
+    ///   - total: Total number of items to process
+    ///   - startTime: When the processing started
+    /// - Returns: Estimated time remaining in seconds, or nil if not enough data
     private func estimateTimeRemaining(processed: Int, total: Int, startTime: Date) -> TimeInterval? {
         guard processed > 0, total > processed else { return nil }
         
         let elapsedTime = Date().timeIntervalSince(startTime)
-        let averageTimePerItem = elapsedTime / Double(processed)
+        let timePerItem = elapsedTime / Double(processed)
         let remainingItems = total - processed
-        
-        return averageTimePerItem * Double(remainingItems)
+        return timePerItem * Double(remainingItems)
     }
 }
 

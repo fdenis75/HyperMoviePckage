@@ -1,7 +1,7 @@
 import Foundation
 
 /// Configuration for preview generation
-public struct PreviewConfiguration {
+public struct PreviewConfiguration: Observable {
     /// Duration of the preview in seconds
     public var duration: Double
     
