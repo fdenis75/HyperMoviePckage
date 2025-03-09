@@ -54,23 +54,23 @@ public struct MosaicConfiguration: Observable, Codable, Sendable {
     }
     
     /// The default mosaic configuration.
-    
+
     public static let `default` = MosaicConfiguration()
 }
 
 /// Output options for saving mosaics.
 public struct OutputOptions: Codable, Sendable {
     /// Whether to overwrite existing files.
-    public let overwrite: Bool
+    public var overwrite: Bool
     
     /// Whether to save at the root directory.
-    public let saveAtRoot: Bool
+    public var saveAtRoot: Bool
     
     /// Whether to create separate folders by type.
-    public let separateFolders: Bool
+    public var separateFolders: Bool
     
     /// Whether to include the full path in the filename.
-    public let addFullPath: Bool
+    public var addFullPath: Bool
     
     /// Creates a new OutputOptions instance.
     public init(

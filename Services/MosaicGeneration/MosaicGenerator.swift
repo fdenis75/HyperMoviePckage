@@ -95,25 +95,65 @@ public actor MosaicGenerator: HyperMovieCore.MosaicGenerating {
                 
                 progressHandlers[video.id]?(0.8)
                 
-                // Save mosaic
+                // Determine output directory based on configuration
                 let dirSuffix = "_Th\(config.width)_\(config.density.name)_\(config.layout.aspectRatio)"
-                let outputDirectory = video.url
-                    .deletingLastPathComponent()
-                    .appendingPathComponent(dirSuffix, isDirectory: true)
                 
-                try FileManager.default.createDirectory(at: outputDirectory,
+                // Determine base output directory
+                let baseOutputDirectory: URL
+                if config.output.saveAtRoot {
+                    // If saveAtRoot is enabled, use the root directory of the video
+                    // This will save all mosaics from a folder and its subfolders in a single folder
+                    baseOutputDirectory = video.url
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(dirSuffix, isDirectory: true)
+                } else {
+                    // Otherwise, save in the same directory as the video
+                    baseOutputDirectory = video.url
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(dirSuffix, isDirectory: true)
+                }
+                
+                try FileManager.default.createDirectory(at: baseOutputDirectory,
                                                      withIntermediateDirectories: true,
                                                      attributes: nil)
                 
-                let originalFilename = video.url.deletingPathExtension().lastPathComponent
-                let fileSuffix = "\(config.width)_\(config.density.name)_\(config.layout.aspectRatio)"
-                let filename = "\(originalFilename)_\(fileSuffix)"
+                // Generate filename based on configuration
+                let filename: String
+                if config.output.addFullPath {
+                    // Replace path separators and spaces with underscores
+                    let fullPath = video.url.deletingPathExtension().path
+                        .replacingOccurrences(of: "/", with: "_")
+                        .replacingOccurrences(of: " ", with: "_")
+                    
+                    // Ensure the filename isn't too long
+                    let maxLength = 200 - dirSuffix.count
+                    let truncatedPath = fullPath.count > maxLength 
+                        ? String(fullPath.suffix(maxLength)) 
+                        : fullPath
+                    
+                    filename = "\(truncatedPath)_\(config.width)_\(config.density.name)_\(config.layout.aspectRatio)"
+                } else {
+                    let originalFilename = video.url.deletingPathExtension().lastPathComponent
+                    let fileSuffix = "\(config.width)_\(config.density.name)_\(config.layout.aspectRatio)"
+                    filename = "\(originalFilename)_\(fileSuffix)"
+                }
                 
-                let mosaicURL = outputDirectory
+                let mosaicURL = baseOutputDirectory
                     .appendingPathComponent(filename)
                     .appendingPathExtension(config.format.rawValue)
                 
                 logger.debug("💾 Saving mosaic to: \(mosaicURL.path)")
+                
+                // Check if file exists and handle overwrite option
+                if FileManager.default.fileExists(atPath: mosaicURL.path) {
+                    if config.output.overwrite {
+                        logger.debug("🔄 Overwriting existing file at: \(mosaicURL.path)")
+                        try FileManager.default.removeItem(at: mosaicURL)
+                    } else {
+                        logger.error("❌ File already exists at: \(mosaicURL.path)")
+                        throw MosaicError.fileExists(mosaicURL)
+                    }
+                }
                 
                 let nsImage = NSImage(cgImage: mosaic, size: .zero)
                 let data: Data?

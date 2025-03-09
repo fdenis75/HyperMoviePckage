@@ -38,7 +38,7 @@ import HyperMovieCore
     public let videoProcessor: any VideoProcessing
     public let mosaicGenerator: any MosaicGenerating
     public let previewGenerator: any PreviewGenerating
-    
+    public let mosaicGeneratorCoordinator: any MosaicGeneratorCoordinating
     // MARK: - User Settings
     public var mosaicConfig: MosaicConfiguration
     public var previewConfig: PreviewConfiguration
@@ -71,6 +71,11 @@ import HyperMovieCore
         self.videoProcessor = videoProcessor
         self.mosaicGenerator = mosaicGenerator
         self.previewGenerator = previewGenerator
+        self.mosaicGeneratorCoordinator = MosaicGeneratorCoordinator(
+            mosaicGenerator: mosaicGenerator,
+            modelContext: container.mainContext,
+            concurrencyLimit: 4
+        )
         
         Task {
             await loadLibrary()

@@ -2,7 +2,6 @@ import Foundation
 import SwiftUI
 import SwiftData
 import HyperMovieModels
-
 /// Protocol defining the interface for application state management
 @available(macOS 15, *)
 public protocol AppStateManaging: Observable {
@@ -57,6 +56,8 @@ public protocol AppStateManaging: Observable {
     /// The preview generation service
     var previewGenerator: any PreviewGenerating { get }
     
+    /// The mosaic generator coordinator service
+    var mosaicGeneratorCoordinator: any MosaicGeneratorCoordinating { get }
     /// The SwiftData model context
     var modelContext: ModelContext { get }
     var modelContainer: ModelContainer { get }
