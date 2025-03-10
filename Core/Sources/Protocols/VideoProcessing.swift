@@ -28,7 +28,8 @@ public protocol VideoProcessing: Actor {
         urls: [URL],
         minConcurrent: Int,
         maxConcurrent: Int,
-        progress: ((Int, String) async -> Void)?
+        progress: ((Int, String) async -> Void)?,
+        modelContext: ModelContext? 
     ) async throws -> [Video]
     
     /// Extract metadata from a video file.

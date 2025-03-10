@@ -84,7 +84,7 @@ public struct MosaicGenerationResult: Sendable {
 
 /// Coordinator for mosaic generation operations
 @available(macOS 15, *)
-public actor MosaicGeneratorCoordinator: MosaicGeneratorCoordinating {
+public actor MosaicGeneratorCoordinator: HyperMovieCore.MosaicGeneratorCoordinating {
   
   
     
@@ -105,8 +105,21 @@ public actor MosaicGeneratorCoordinator: MosaicGeneratorCoordinating {
     ///   - mosaicGenerator: The mosaic generator to use
     ///   - modelContext: The SwiftData model context
     ///   - concurrencyLimit: Maximum number of concurrent generation tasks
-    public init(mosaicGenerator: any MosaicGenerating, modelContext: ModelContext, concurrencyLimit: Int = 4) {
-        self.mosaicGenerator = mosaicGenerator
+    ///   - generatorType: The type of mosaic generator to use (standard, metal, or auto)
+    public init(
+        mosaicGenerator: (any MosaicGenerating)? = nil,
+        modelContext: ModelContext,
+        concurrencyLimit: Int = 4,
+        generatorType: MosaicGeneratorFactory.GeneratorType = .auto
+    ) {
+        if let generator = mosaicGenerator {
+            self.mosaicGenerator = generator
+            logger.debug("🎬 MosaicGeneratorCoordinator initialized with provided generator")
+        } else {
+            self.mosaicGenerator = MosaicGeneratorFactory.createGenerator(type: generatorType)
+            logger.debug("🎬 MosaicGeneratorCoordinator initialized with \(generatorType.rawValue) generator")
+        }
+        
         self.modelContext = modelContext
         self.concurrencyLimit = concurrencyLimit
         logger.debug("🎬 MosaicGeneratorCoordinator initialized with concurrency limit: \(concurrencyLimit)")

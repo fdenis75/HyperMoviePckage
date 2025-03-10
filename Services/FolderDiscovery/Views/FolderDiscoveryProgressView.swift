@@ -1,4 +1,4 @@
-import SwiftUI
+/* import SwiftUI
 @available(macOS 15.0, *)
 public struct FolderDiscoveryProgressView: View {
     @ObservedObject var viewModel: FolderDiscoveryViewModel
@@ -61,4 +61,4 @@ public struct FolderDiscoveryProgressView: View {
         videoFinder: VideoFinderService(),
         videoProcessor: VideoProcessor()
     )))
-} 
+} */

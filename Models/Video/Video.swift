@@ -151,7 +151,7 @@ public final class Video {
         }
     }
     
-    public init(id: UUID = UUID(), url: URL, title: String? = nil) async throws {
+    public init(id: UUID = UUID(), url: URL, title: String? = nil, modelContext: ModelContext? = nil) async throws {
         let initInterval = signposter.beginInterval("Video Initialization", "id: \(id)")
         logger.debug("🎬 Initializing Video object with id: \(id), url: \(url.path)")
         
@@ -199,6 +199,13 @@ public final class Video {
         let fileSizeInterval = signposter.beginInterval("Update File Size")
         await updateFileSize()
         signposter.endInterval("Update File Size", fileSizeInterval)
+        
+        // Create folder structure if modelContext is provided
+        if let modelContext = modelContext {
+            let folderStructureInterval = signposter.beginInterval("Create Folder Structure During Init")
+            _ = createFolderStructure(in: modelContext)
+            signposter.endInterval("Create Folder Structure During Init", folderStructureInterval)
+        }
         
         // Start thumbnail generation in background if needed
         if self.thumbnailGenerationStatus == .pending {
